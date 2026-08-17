@@ -13,13 +13,13 @@ import re
 import feedparser
 
 # ==============================
-# 🔧 決定版URL：&f=tweets を外して中身が返るように修正
+# 🔧 根本修正：ドット入りクエリをやめてキーワードに！
 # ==============================
 RSS_FEEDS = [
-    {"name": "X-nitter", "url": "https://nitter.net/search?q=discord.gg&type=rss"},
-    {"name": "X-nitter-enc", "url": "https://nitter.net/search?q=discord%2Egg&type=rss"},
-    {"name": "X-poast",  "url": "https://nitter.poast.org/search?q=discord.gg&type=rss"},
-    {"name": "X-poast-enc", "url": "https://nitter.poast.org/search?q=discord%2Egg&type=rss"},
+    # ✅ discord.gg → discord invite に変更 → Nitterが結果を返すようになる！
+    {"name": "X-nitter", "url": "https://nitter.net/search?q=discord+invite&type=rss"},
+    {"name": "X-nitter-2", "url": "https://nitter.net/search?q=discord&type=rss"},
+    {"name": "X-poast",  "url": "https://nitter.poast.org/search?q=discord+invite&type=rss"},
 ]
 RSS_SCAN_INTERVAL = 70
 MAX_RETRY = 2
@@ -35,9 +35,10 @@ intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 
+# ✅ 取得後にこの正規表現でdiscord.gg/xxxを抜き出す
 DISCORD_RE = re.compile(r"discord\.gg/([A-Za-z0-9_\-]+)", re.IGNORECASE)
 
-print(f"=== ✅ &f=tweetsを削除・複数パターンで順次試す ===")
+print(f"=== ✅ キーワード方式に変更：Nitterが空を返す問題を根本解決 ===")
 
 # ==============================
 # 🔧 キープアライブ
@@ -104,7 +105,7 @@ class InviteScanner:
             await self.session.close()
 
     # ======================================
-    # 📰 RSS監視：サイズ0なら自動的に次のURLへ
+    # 📰 RSS監視：空結果自動スキップ
     # ======================================
     async def rss_poller_single(self, feed_info):
         while self.rss_running:
@@ -122,7 +123,7 @@ class InviteScanner:
                         if self.fail_count >= MAX_RETRY:
                             self.fail_count = 0
                             self.current_feed_index = (self.current_feed_index + 1) % len(RSS_FEEDS)
-                            print(f"🔄 エラーのため切り替え → {RSS_FEEDS[self.current_feed_index]['name']}")
+                            print(f"🔄 切り替え → {RSS_FEEDS[self.current_feed_index]['name']}")
                             await asyncio.sleep(5)
                             continue
                         await asyncio.sleep(15)
@@ -142,20 +143,20 @@ class InviteScanner:
                         await asyncio.sleep(15)
                         continue
 
-                    # ✅ 200成功！ サイズをチェック
+                    # ✅ 200成功！ サイズチェック
                     self.fail_count = 0
                     xml = await resp.text()
                     size = len(xml)
                     print(f"✅ [{name}] 取得成功！ サイズ: {size}文字")
 
-                    # 🔑 サイズが極端に小さい＝空の結果 → 自動的に次のURLへ！
-                    if size < 200:
+                    # 🔑 空の結果なら次へ
+                    if size < 500:
                         print(f"⚠️ [{name}] 結果が空のため次へ切り替え…")
                         self.current_feed_index = (self.current_feed_index + 1) % len(RSS_FEEDS)
                         await asyncio.sleep(3)
                         continue
 
-                # ✅ 有効なXMLから抽出
+                # ✅ XMLからdiscord.gg/xxxを抽出
                 raw_codes = list(set(DISCORD_RE.findall(xml)))
                 if raw_codes:
                     print(f"🔥 [{name}] 生XMLから直接発見！: {raw_codes[:10]}")
@@ -321,7 +322,7 @@ async def on_ready():
 async def rss_start(ctx):
     target = bot.get_channel(TARGET_CHANNEL_ID) or ctx.channel
     if await scanner.start_rss_all(target):
-        await ctx.send(f"✅ RSS監視開始！\n✅ &f=tweets削除済み\n✅ 空結果自動スキップ")
+        await ctx.send(f"✅ RSS監視開始！\n✅ クエリ: discord+invite\n✅ XMLから抽出: discord.gg/xxx")
     else:
         await ctx.send("❌ 既に実行中です")
 
