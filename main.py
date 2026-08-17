@@ -53,6 +53,7 @@ class InviteScanner:
         self.checked = 0
         self.running = False
         self.lock = asyncio.Lock()
+        self.forever = False
         
     async def init(self):
         self.session = aiohttp.ClientSession(
@@ -94,7 +95,7 @@ class InviteScanner:
         return None
     
     async def worker(self, channel: discord.TextChannel):
-        while self.running and self.checked < MAX_ATTEMPTS:
+        while self.running and (self.forever or self.checked < MAX_ATTEMPTS):
             code = self.generate_code()
             result = await self.check(code)
             
@@ -159,6 +160,7 @@ async def scan(ctx, duration: int = 60):
     
     scanner.running = True
     scanner.checked = 0
+    scanner.forever = False
     
     await ctx.send(f"🔍 スキャン開始（{duration}秒間）\n対象チャンネル: {target.mention}")
     
@@ -194,6 +196,7 @@ async def scan_forever(ctx):
 
     scanner.running = True
     scanner.checked = 0
+    scanner.forever = True
 
     await ctx.send(f"🔁 永続スキャン開始（停止コマンドで停止）\n対象チャンネル: {target.mention}")
 
@@ -210,6 +213,7 @@ async def stop(ctx):
         await ctx.send("実行していません。")
         return
     scanner.running = False
+    scanner.forever = False
     await ctx.send("⏹️ 停止しました。")
 
 @bot.command()
@@ -218,6 +222,7 @@ async def status(ctx):
     """現在の状態"""
     await ctx.send(
         f"実行中: {'はい' if scanner.running else 'いいえ'}\n"
+        f"永続モード: {'オン' if scanner.forever else 'オフ'}\n"
         f"チェック済み: {scanner.checked}\n"
         f"発見: {len(scanner.found)}"
     )
