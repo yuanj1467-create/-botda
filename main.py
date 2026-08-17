@@ -12,14 +12,14 @@ from dotenv import load_dotenv
 import re
 
 # ==============================
-# 🔧 最終最終手段：RSSを使わない！ X検索ページを直接取得
+# ✅ X検索ページを直接取得 + aiohttp制限を1MBに緩和
 # ==============================
 SEARCH_URLS = [
     {"name": "X-検索1", "url": "https://x.com/search?q=discord+invite&f=live"},
     {"name": "X-検索2", "url": "https://x.com/search?q=discord.gg&f=live"},
     {"name": "X-検索3", "url": "https://x.com/search?q=discord+server&f=live"},
 ]
-SCAN_INTERVAL = 180  # 3分毎
+SCAN_INTERVAL = 180
 MAX_RETRY = 3
 
 MAX_WORKERS = int(os.getenv("MAX_WORKERS", "5"))
@@ -33,10 +33,9 @@ intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 
-# ✅ 正規表現で直接抽出
 DISCORD_RE = re.compile(r"discord\.gg/([A-Za-z0-9_\-]+)", re.IGNORECASE)
 
-print(f"=== ✅ 最終手段：X検索ページを直接取得・RSS不使用 ===")
+print(f"=== ✅ aiohttp制限を1MBに緩和・X直接取得 ===")
 for u in SEARCH_URLS:
     print(f"  {u['name']}: {u['url']}")
 
@@ -76,7 +75,6 @@ class InviteScanner:
         self.fail_count = 0
 
     async def init(self):
-        # ✅ ブラウザと同じヘッダーでXにアクセス
         headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36",
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
@@ -89,7 +87,15 @@ class InviteScanner:
             "Cache-Control": "max-age=0",
         }
         connector = aiohttp.TCPConnector(limit=5, force_close=False)
-        self.session = aiohttp.ClientSession(headers=headers, connector=connector)
+        # ======================================
+        # ✅ 核心修正：ヘッダーサイズ制限を1MBに引き上げ！
+        # ======================================
+        self.session = aiohttp.ClientSession(
+            headers=headers,
+            connector=connector,
+            max_line_size=1024*1024,   # ✅ 1MB
+            max_field_size=1024*1024,  # ✅ 1MB
+        )
 
     async def close(self):
         self.web_running = False
@@ -132,7 +138,6 @@ class InviteScanner:
                         await asyncio.sleep(30)
                         continue
 
-                    # ✅ 成功！HTML取得
                     self.fail_count = 0
                     html = await resp.text()
                     size = len(html)
@@ -144,7 +149,6 @@ class InviteScanner:
                         await asyncio.sleep(5)
                         continue
 
-                # ✅ HTMLから直接招待コードを抽出
                 codes = list(set(DISCORD_RE.findall(html)))
                 if codes:
                     print(f"🔥 [{name}] ページから発見: {codes[:15]}")
@@ -288,7 +292,7 @@ async def on_ready():
 async def web_start(ctx):
     target = bot.get_channel(TARGET_CHANNEL_ID) or ctx.channel
     if await scanner.start_web_monitor(target):
-        await ctx.send("✅ X検索直接監視開始！（RSS不使用）")
+        await ctx.send("✅ X検索直接監視開始！（制限緩和済）")
     else:
         await ctx.send("❌ 既に実行中です")
 
