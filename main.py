@@ -13,13 +13,13 @@ import re
 import feedparser
 
 # ==============================
-# 🔧 設定：nitter.net 優先 + type=rss
+# 🔧 決定版URL：&f=tweets を外して中身が返るように修正
 # ==============================
 RSS_FEEDS = [
-    # ✅ . を %2E にエンコード：discord.gg → discord%2Egg
-    {"name": "X-nitter", "url": "https://nitter.net/search?q=discord%2Egg&f=tweets&type=rss"},
-    {"name": "X-space",  "url": "https://nitter.space/search?q=discord%2Egg&f=tweets&type=rss"},
-    {"name": "X-poast",  "url": "https://nitter.poast.org/search?q=discord%2Egg&f=tweets&type=rss"},
+    {"name": "X-nitter", "url": "https://nitter.net/search?q=discord.gg&type=rss"},
+    {"name": "X-nitter-enc", "url": "https://nitter.net/search?q=discord%2Egg&type=rss"},
+    {"name": "X-poast",  "url": "https://nitter.poast.org/search?q=discord.gg&type=rss"},
+    {"name": "X-poast-enc", "url": "https://nitter.poast.org/search?q=discord%2Egg&type=rss"},
 ]
 RSS_SCAN_INTERVAL = 70
 MAX_RETRY = 2
@@ -37,7 +37,7 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 
 DISCORD_RE = re.compile(r"discord\.gg/([A-Za-z0-9_\-]+)", re.IGNORECASE)
 
-print(f"=== ✅ ブラウザと同じリクエストに修正 ===")
+print(f"=== ✅ &f=tweetsを削除・複数パターンで順次試す ===")
 
 # ==============================
 # 🔧 キープアライブ
@@ -78,7 +78,6 @@ class InviteScanner:
         self.fail_count = 0
 
     async def init(self):
-        # ✅ ブラウザと完全に同じヘッダーに！
         headers = {
             "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
@@ -105,7 +104,7 @@ class InviteScanner:
             await self.session.close()
 
     # ======================================
-    # 📰 RSS監視：エラー判定を正確に
+    # 📰 RSS監視：サイズ0なら自動的に次のURLへ
     # ======================================
     async def rss_poller_single(self, feed_info):
         while self.rss_running:
@@ -115,45 +114,48 @@ class InviteScanner:
             try:
                 print(f"📰 [{name}] アクセス試行中…")
                 async with self.session.get(url, timeout=30) as resp:
-                    # ✅ ステータスコードを正確に表示
                     print(f"📡 [{name}] ステータス: {resp.status}")
 
-                    # ✅ 5xx系エラー（サーバー側の問題）
                     if resp.status >= 500:
                         self.fail_count += 1
                         print(f"⚠️ [{name}] サーバーエラー({resp.status}) → {self.fail_count}/{MAX_RETRY}")
-                        
                         if self.fail_count >= MAX_RETRY:
                             self.fail_count = 0
                             self.current_feed_index = (self.current_feed_index + 1) % len(RSS_FEEDS)
-                            print(f"🔄 次へ切り替え: {RSS_FEEDS[self.current_feed_index]['name']}")
+                            print(f"🔄 エラーのため切り替え → {RSS_FEEDS[self.current_feed_index]['name']}")
                             await asyncio.sleep(5)
                             continue
-                        
                         await asyncio.sleep(15)
                         continue
 
-                    # ✅ 4xx系エラー（こちら側の問題）
                     if resp.status == 403:
-                        print(f"⚠️ [{name}] アクセス拒否(403) → ヘッダーを拒否られてる可能性")
+                        print(f"⚠️ [{name}] アクセス拒否(403)")
                         await asyncio.sleep(30)
                         continue
                     if resp.status == 404:
-                        print(f"❌ [{name}] URLが見つからない(404)")
+                        print(f"❌ [{name}] URL不明(404) → 次へ")
                         self.current_feed_index = (self.current_feed_index + 1) % len(RSS_FEEDS)
                         await asyncio.sleep(5)
                         continue
                     if resp.status != 200:
-                        print(f"⚠️ [{name}] 不明なステータス: {resp.status}")
+                        print(f"⚠️ [{name}] 不明: {resp.status}")
                         await asyncio.sleep(15)
                         continue
 
-                    # ✅ 200 OK！ 成功！
+                    # ✅ 200成功！ サイズをチェック
                     self.fail_count = 0
                     xml = await resp.text()
-                    print(f"✅ [{name}] 取得成功！ サイズ: {len(xml)}文字")
+                    size = len(xml)
+                    print(f"✅ [{name}] 取得成功！ サイズ: {size}文字")
 
-                # ✅ 生XMLから直接抽出
+                    # 🔑 サイズが極端に小さい＝空の結果 → 自動的に次のURLへ！
+                    if size < 200:
+                        print(f"⚠️ [{name}] 結果が空のため次へ切り替え…")
+                        self.current_feed_index = (self.current_feed_index + 1) % len(RSS_FEEDS)
+                        await asyncio.sleep(3)
+                        continue
+
+                # ✅ 有効なXMLから抽出
                 raw_codes = list(set(DISCORD_RE.findall(xml)))
                 if raw_codes:
                     print(f"🔥 [{name}] 生XMLから直接発見！: {raw_codes[:10]}")
@@ -199,7 +201,7 @@ class InviteScanner:
                 if self.fail_count >= MAX_RETRY:
                     self.fail_count = 0
                     self.current_feed_index = (self.current_feed_index + 1) % len(RSS_FEEDS)
-                    print(f"🔄 切り替え: {RSS_FEEDS[self.current_feed_index]['name']}")
+                    print(f"🔄 切り替え → {RSS_FEEDS[self.current_feed_index]['name']}")
                 await asyncio.sleep(5)
 
             await asyncio.sleep(RSS_SCAN_INTERVAL)
@@ -319,7 +321,7 @@ async def on_ready():
 async def rss_start(ctx):
     target = bot.get_channel(TARGET_CHANNEL_ID) or ctx.channel
     if await scanner.start_rss_all(target):
-        await ctx.send(f"✅ RSS監視開始！\nURL: nitter.net + type=rss\nヘッダー: ブラウザ擬装済み")
+        await ctx.send(f"✅ RSS監視開始！\n✅ &f=tweets削除済み\n✅ 空結果自動スキップ")
     else:
         await ctx.send("❌ 既に実行中です")
 
