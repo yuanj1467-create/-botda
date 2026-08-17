@@ -16,9 +16,10 @@ import feedparser
 # 🔧 設定：nitter.net 優先 + type=rss
 # ==============================
 RSS_FEEDS = [
-    {"name": "X-nitter", "url": "https://nitter.net/search?q=discord.gg&f=tweets&type=rss"},
-    {"name": "X-space",  "url": "https://nitter.space/search?q=discord.gg&f=tweets&type=rss"},
-    {"name": "X-poast",  "url": "https://nitter.poast.org/search?q=discord.gg&f=tweets&type=rss"},
+    # ✅ . を %2E にエンコード：discord.gg → discord%2Egg
+    {"name": "X-nitter", "url": "https://nitter.net/search?q=discord%2Egg&f=tweets&type=rss"},
+    {"name": "X-space",  "url": "https://nitter.space/search?q=discord%2Egg&f=tweets&type=rss"},
+    {"name": "X-poast",  "url": "https://nitter.poast.org/search?q=discord%2Egg&f=tweets&type=rss"},
 ]
 RSS_SCAN_INTERVAL = 70
 MAX_RETRY = 2
