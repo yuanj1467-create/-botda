@@ -39,7 +39,7 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 TARGET_CHANNEL_ID = 1538692769168625674
 
 MAX_WORKERS = 50
-CHECK_DELAY = 2.0
+CHECK_DELAY = 0.2
 MAX_ATTEMPTS = 1000
 
 intents = discord.Intents.default()
@@ -168,6 +168,39 @@ async def scan(ctx, duration: int = 60):
     await asyncio.gather(*workers, return_exceptions=True)
     
     await ctx.send(f"# ✅ スキャン完了\nチェック数: {scanner.checked}\n発見数: {len(scanner.found)}")
+
+@bot.command()
+@commands.has_role("TISN管理者")
+async def scan_forever(ctx):
+    """停止コマンドで止めるまで永続的にスキャンを行います"""
+    if scanner.running:
+        await ctx.send("❌ 既に実行中です。")
+        return
+
+    target = bot.get_channel(TARGET_CHANNEL_ID)
+    
+    if target is None:
+        target = ctx.channel
+        await ctx.send(f"⚠️ 設定チャンネル({TARGET_CHANNEL_ID})が見つかりません。現在のチャンネル({ctx.channel.mention})を使用します。")
+    
+    if not isinstance(target, discord.TextChannel):
+        await ctx.send("❌ 指定されたチャンネルはテキストチャンネルではありません。")
+        return
+    
+    bot_member = target.guild.me
+    if not target.permissions_for(bot_member).send_messages:
+        await ctx.send(f"❌ Botは{target.mention}にメッセージを送信する権限がありません。")
+        return
+
+    scanner.running = True
+    scanner.checked = 0
+
+    await ctx.send(f"🔁 永続スキャン開始（停止コマンドで停止）\n対象チャンネル: {target.mention}")
+
+    workers = [asyncio.create_task(scanner.worker(target)) for _ in range(MAX_WORKERS)]
+    await asyncio.gather(*workers, return_exceptions=True)
+
+    await ctx.send(f"# ✅ 永続スキャン停止\nチェック数: {scanner.checked}\n発見数: {len(scanner.found)}")
 
 @bot.command()
 @commands.has_role("TISN管理者")
