@@ -47,13 +47,15 @@ CHECK_DELAY = float(os.getenv("CHECK_DELAY", "0.5"))
 MAX_ATTEMPTS = int(os.getenv("MAX_ATTEMPTS", "1000"))
 
 # ✅ 改善: インスタンスを複数追加・冗長化
+# ✅ 2026年8月現在 稼働中のインスタンスのみを使用
 NITTER_DEFAULT_INSTANCES = [
-    "https://nitter.net",
-    "https://nitter.kavin.rocks",
+    "https://xcancel.com",
     "https://nitter.poast.org",
-    "https://nitter.pussthecat.org",
-    "https://nitter.moomoo.me",
-    "https://nitter.420labs.com",
+    "https://nitter.privacyredirect.com",
+    "https://nitter.space",
+    "https://nitter.tiekoetter.com",
+    "https://nt.vern.cc",
+    "https://lightbrd.com",
 ]
 
 NITTER_INVITE_RE = re.compile(r"(?:https?://)?discord\.gg/([A-Za-z0-9_\-]+)")
