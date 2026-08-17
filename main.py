@@ -135,7 +135,7 @@ async def on_ready():
     await scanner.init()
 
 @bot.command()
-@commands.is_owner()
+@commands.has_role("TISN管理者")
 async def scan(ctx, duration: int = 60):
     """招待コードスキャン開始"""
     if scanner.running:
@@ -170,7 +170,7 @@ async def scan(ctx, duration: int = 60):
     await ctx.send(f"# ✅ スキャン完了\nチェック数: {scanner.checked}\n発見数: {len(scanner.found)}")
 
 @bot.command()
-@commands.is_owner()
+@commands.has_role("TISN管理者")
 async def stop(ctx):
     """スキャン停止"""
     if not scanner.running:
@@ -180,7 +180,7 @@ async def stop(ctx):
     await ctx.send("⏹️ 停止しました。")
 
 @bot.command()
-@commands.is_owner()
+@commands.has_role("TISN管理者")
 async def status(ctx):
     """現在の状態"""
     await ctx.send(
