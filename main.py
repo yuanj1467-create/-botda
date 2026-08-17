@@ -16,10 +16,10 @@ import feedparser
 # 🔧 設定
 # ==============================
 RSS_FEEDS = [
-    # ✅ X（Nitter直接RSS・トークン不要・リアルタイム更新）
-    {"name": "X", "url": "https://nitter.poast.org/search?q=discord.gg&f=tweets&rss=1"},
-    # ❌ Reddit 無効化（コメントアウト）
-    # {"name": "Reddit", "url": "https://rss.app/feeds/zUum5TkbGYODlWea.xml"},
+    # ✅ 代替サーバーに変更！ poast.orgが落ちているのでこちらを使う
+    {"name": "X", "url": "https://nitter.lucabased.xyz/search?q=discord.gg&f=tweets&rss=1"},
+    # 🔁 上記がダメなら下記に差し替えて
+    # {"name": "X", "url": "https://nitter.space/search?q=discord.gg&f=tweets&rss=1"},
 ]
 RSS_SCAN_INTERVAL = 70
 
@@ -28,18 +28,17 @@ CHECK_DELAY = float(os.getenv("CHECK_DELAY", "1.5"))
 
 load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-TARGET_CHANNEL_ID = int(os.getenv("TARGET_CHANNEL_ID", "1538692769168625674"))
+# ✅ チャンネルID 設定済み！ 自分で変更不要
+TARGET_CHANNEL_ID = 1538692769168625674
 
 intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 
-# ✅ 生テキストから直接抽出（大文字小文字区別なし）
 DISCORD_RE = re.compile(r"discord\.gg/([A-Za-z0-9_\-]+)", re.IGNORECASE)
 
-print(f"=== 最終版｜X(Nitter) 専用 ===")
+print(f"=== 503対策版｜代替Nitterサーバー ===")
 print(f"監視先: {[f['name'] for f in RSS_FEEDS]}")
-print(f"✅ Nitter: トークン/APIキー 一切不要")
 
 # ==============================
 # 🔧 キープアライブ
@@ -106,6 +105,10 @@ class InviteScanner:
             try:
                 print(f"📰 [{name}] RSS確認中…")
                 async with self.session.get(url, timeout=20) as resp:
+                    if resp.status == 503:
+                        print(f"⚠️ [{name}] サーバー一時停止 → 60秒待機して再試行")
+                        await asyncio.sleep(60)
+                        continue
                     if resp.status == 403:
                         print(f"⚠️ [{name}] 403 → 60秒待機")
                         await asyncio.sleep(60)
@@ -116,7 +119,6 @@ class InviteScanner:
                         continue
                     xml = await resp.text()
 
-                # ✅ 生XML全体から直接検索！
                 raw_codes = list(set(DISCORD_RE.findall(xml)))
                 if raw_codes:
                     print(f"🔥 [{name}] 生XMLから直接発見！: {raw_codes[:10]}")
