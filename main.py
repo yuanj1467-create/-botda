@@ -27,32 +27,40 @@ class _KeepAliveHandler(BaseHTTPRequestHandler):
 
 def start_keep_alive():
     """Railwayでスリープ防止するためのHTTPサーバー"""
-    port = int(os.environ.get("PORT", 8080))
-    server = HTTPServer(("0.0.0.0", port), _KeepAliveHandler)
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
-    thread.start()
-    print(f"キープアライブサーバー起動: ポート {port}")
+    try:
+        port = int(os.environ.get("PORT", 8080))
+        server = HTTPServer(("0.0.0.0", port), _KeepAliveHandler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        print(f"キープアライブサーバー起動: ポート {port}")
+    except Exception as e:
+        print(f"Keep-alive サーバー起動失敗: {e}")
 
 # ==============================
 # Bot設定
 # ==============================
 load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-TARGET_CHANNEL_ID = 1538692769168625674
+TARGET_CHANNEL_ID = int(os.getenv("TARGET_CHANNEL_ID", "1538692769168625674"))
 
-MAX_WORKERS = 50
-CHECK_DELAY = 0.5
-MAX_ATTEMPTS = 1000
+MAX_WORKERS = int(os.getenv("MAX_WORKERS", "50"))
+CHECK_DELAY = float(os.getenv("CHECK_DELAY", "0.5"))
+MAX_ATTEMPTS = int(os.getenv("MAX_ATTEMPTS", "1000"))
 
 NITTER_DEFAULT_INSTANCES = [
     "https://nitter.net",
     "https://nitter.kavin.rocks",
 ]
-NITTER_INVITE_RE = re.compile(r"(?:https?://)?discord\.gg/([A-Za-z0-9\-]+)")
+# allow underscore in invite codes too
+NITTER_INVITE_RE = re.compile(r"(?:https?://)?discord\.gg/([A-Za-z0-9_\-]+)")
 
 intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix="!", intents=intents)
+
+print("Starting main.py")
+print(f"BOT_TOKEN set: {'yes' if BOT_TOKEN else 'no'}")
+print(f"CHECK_DELAY={CHECK_DELAY}, MAX_WORKERS={MAX_WORKERS}, MAX_ATTEMPTS={MAX_ATTEMPTS}")
 
 class InviteScanner:
     def __init__(self):
@@ -60,6 +68,7 @@ class InviteScanner:
         self.found = []
         self.checked = 0
         self.running = False
+        # asyncio.Lock can be created outside loop in modern Python
         self.lock = asyncio.Lock()
         self.forever = False
         self.result_queue = asyncio.Queue()
@@ -70,6 +79,7 @@ class InviteScanner:
         self.nitter_seen = {}
         
     async def init(self):
+        # create a shared aiohttp session
         self.session = aiohttp.ClientSession(
             headers={"User-Agent": "DiscordBot (1.0)"}
         )
@@ -80,8 +90,16 @@ class InviteScanner:
         # wait for sender to finish flushing
         if self._sender_task:
             try:
-                await self.result_queue.join()
-                await self._sender_task
+                await asyncio.wait_for(self.result_queue.join(), timeout=10)
+            except Exception:
+                pass
+            try:
+                await asyncio.wait_for(self._sender_task, timeout=10)
+            except Exception:
+                pass
+        if self.nitter_task:
+            try:
+                await asyncio.wait_for(self.nitter_task, timeout=5)
             except Exception:
                 pass
         if self.session:
@@ -93,18 +111,22 @@ class InviteScanner:
         return ''.join(random.choices(chars, k=length))
     
     async def _sleep_interruptible(self, seconds: float):
-        # Sleep in small increments so we can stop early if self.running becomes False
+        # Sleep in small increments so we can stop early if either running flag is cleared
         remaining = seconds
         chunk = 1.0
-        while remaining > 0 and self.running:
+        # check both running flags so nitter poller and workers can be interrupted
+        while remaining > 0 and (getattr(self, 'running', False) or getattr(self, 'nitter_running', False)):
             await asyncio.sleep(min(chunk, remaining))
             remaining -= chunk
-            # loop will exit early if self.running turned False
+            # loop will exit early if flags turned False
     
     async def check(self, code: str):
+        if not self.session:
+            # session not initialized
+            return None
         url = f"https://discord.com/api/v10/invites/{code}?with_counts=true"
         try:
-            async with self.session.get(url, timeout=5) as resp:
+            async with self.session.get(url, timeout=10) as resp:
                 async with self.lock:
                     self.checked += 1
                 
@@ -122,16 +144,17 @@ class InviteScanner:
                     print(f"レート制限: {retry}秒待機")
                     # wait but allow early exit if scanner is stopped
                     await self._sleep_interruptible(retry)
-        except Exception:
-            pass
+        except Exception as e:
+            # log exception for debugging
+            print(f"check() exception for {code}: {e}")
         return None
     
     async def _sender(self, channel: discord.TextChannel):
         # Drain results from the queue and send them. Keep running while scanner is running or queue not empty
-        while self.running or not self.result_queue.empty() or self.nitter_running:
+        while (getattr(self, 'running', False) or not self.result_queue.empty() or getattr(self, 'nitter_running', False)):
             result = None
             try:
-                # wait up to 1s for a result so we can re-check self.running periodically
+                # wait up to 1s for a result so we can re-check flags periodically
                 result = await asyncio.wait_for(self.result_queue.get(), timeout=1.0)
             except asyncio.TimeoutError:
                 continue
@@ -168,7 +191,7 @@ class InviteScanner:
                         pass
 
     async def worker(self, channel: discord.TextChannel):
-        while self.running and (self.forever or self.checked < MAX_ATTEMPTS):
+        while getattr(self, 'running', False) and (self.forever or self.checked < MAX_ATTEMPTS):
             code = self.generate_code()
             result = await self.check(code)
             
@@ -273,6 +296,40 @@ async def on_ready():
     print(f"TARGET_CHANNEL_ID: {TARGET_CHANNEL_ID}")
     await scanner.init()
 
+# ------------------------- Commands -------------------------
+@bot.command(name="nitter_scan_start", aliases=["twitter_scan_start"])
+@commands.has_role("TISN管理者")
+async def nitter_scan_start(ctx, interval: int = None):
+    """Nitter（Twitter代替）ポーリング開始"""
+    if scanner.nitter_task and not scanner.nitter_task.done():
+        await ctx.send("❌ 既に Nitter ポーラーが実行中です。")
+        return
+
+    instances_env = os.getenv("NITTER_INSTANCES", "")
+    if instances_env:
+        instances = [s.strip() for s in instances_env.split(",") if s.strip()]
+    else:
+        instances = NITTER_DEFAULT_INSTANCES
+
+    poll_interval = interval if interval is not None else int(os.getenv("NITTER_POLL_INTERVAL", "30"))
+    scanner.nitter_task = asyncio.create_task(scanner.nitter_poller(instances, interval=poll_interval))
+    await ctx.send(f"🔎 Nitter ポーリング開始（interval={poll_interval}s）")
+
+@bot.command(name="nitter_scan_stop", aliases=["twitter_scan_stop"])
+@commands.has_role("TISN管理者")
+async def nitter_scan_stop(ctx):
+    """Nitter（Twitter代替）ポーリング停止"""
+    if not scanner.nitter_task or scanner.nitter_task.done():
+        await ctx.send("実行していません。")
+        return
+    scanner.nitter_running = False
+    try:
+        await scanner.nitter_task
+    except Exception:
+        pass
+    scanner.nitter_task = None
+    await ctx.send("⏹️ Nitter ポーリング停止しました。")
+
 @bot.command()
 @commands.has_role("TISN管理者")
 async def scan(ctx, duration: int = 60):
@@ -280,30 +337,30 @@ async def scan(ctx, duration: int = 60):
     if scanner.running:
         await ctx.send("❌ 既に実行中です。")
         return
-    
+
     target = bot.get_channel(TARGET_CHANNEL_ID)
-    
+
     if target is None:
         target = ctx.channel
         await ctx.send(f"⚠️ 設定チャンネル({TARGET_CHANNEL_ID})が見つかりません。現在のチャンネル({ctx.channel.mention})を使用します。")
-    
+
     if not isinstance(target, discord.TextChannel):
         await ctx.send("❌ 指定されたチャンネルはテキストチャンネルではありません。")
         return
-    
+
     bot_member = target.guild.me
     if not target.permissions_for(bot_member).send_messages:
         await ctx.send(f"❌ Botは{target.mention}にメッセージを送信する権限がありません。")
         return
-    
+
     scanner.running = True
     scanner.checked = 0
     scanner.forever = False
     # start sender task
     scanner._sender_task = asyncio.create_task(scanner._sender(target))
-    
+
     await ctx.send(f"🔍 スキャン開始（{duration}秒間）\n対象チャンネル: {target.mention}")
-    
+
     workers = [asyncio.create_task(scanner.worker(target)) for _ in range(MAX_WORKERS)]
     await asyncio.sleep(duration)
     scanner.running = False
@@ -315,7 +372,7 @@ async def scan(ctx, duration: int = 60):
             await scanner._sender_task
     except Exception:
         pass
-    
+
     await ctx.send(f"# ✅ スキャン完了\nチェック数: {scanner.checked}\n発見数: {len(scanner.found)}")
 
 @bot.command()
@@ -337,3 +394,9 @@ async def scan_forever(ctx):
         return
     
     bot_member = target.guild.me
+    if not target.permissions_for(bot_member).send_messages:
+        await ctx.send(f"❌ Botは{target.mention}にメッセージを送信する権限がありません。")
+        return
+
+    scanner.running = True
+{
