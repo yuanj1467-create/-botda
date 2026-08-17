@@ -315,4 +315,159 @@ async def nitter_scan_start(ctx, interval: int = None):
     scanner.nitter_task = asyncio.create_task(scanner.nitter_poller(instances, interval=poll_interval))
     await ctx.send(f"🔎 Nitter ポーリング開始（interval={poll_interval}s）")
 
-@assistant to=functions.create_or_update_file ottshiba{
+@bot.command(name="nitter_scan_stop", aliases=["twitter_scan_stop"])
+@commands.has_role("TISN管理者")
+async def nitter_scan_stop(ctx):
+    """Nitter（Twitter代替）ポーリング停止"""
+    if not scanner.nitter_task or scanner.nitter_task.done():
+        await ctx.send("実行していません。")
+        return
+    scanner.nitter_running = False
+    try:
+        await scanner.nitter_task
+    except Exception:
+        pass
+    scanner.nitter_task = None
+    await ctx.send("⏹️ Nitter ポーリング停止しました。")
+
+@bot.command()
+@commands.has_role("TISN管理者")
+async def scan(ctx, duration: int = 60):
+    """招待コードスキャン開始"""
+    if scanner.running:
+        await ctx.send("❌ 既に実行中です。")
+        return
+
+    target = bot.get_channel(TARGET_CHANNEL_ID)
+
+    if target is None:
+        target = ctx.channel
+        await ctx.send(f"⚠️ 設定チャンネル({TARGET_CHANNEL_ID})が見つかりません。現在のチャンネル({ctx.channel.mention})を使用します。")
+
+    if not isinstance(target, discord.TextChannel):
+        await ctx.send("❌ 指定されたチャンネルはテキストチャンネルではありません。")
+        return
+
+    bot_member = target.guild.me
+    if not target.permissions_for(bot_member).send_messages:
+        await ctx.send(f"❌ Botは{target.mention}にメッセージを送信する権限がありません。")
+        return
+
+    scanner.running = True
+    scanner.checked = 0
+    scanner.forever = False
+    # start sender task
+    scanner._sender_task = asyncio.create_task(scanner._sender(target))
+
+    await ctx.send(f"🔍 スキャン開始（{duration}秒間）\n対象チャンネル: {target.mention}")
+
+    workers = [asyncio.create_task(scanner.worker(target)) for _ in range(MAX_WORKERS)]
+    await asyncio.sleep(duration)
+    scanner.running = False
+    await asyncio.gather(*workers, return_exceptions=True)
+    # wait for queued results to be sent
+    try:
+        await scanner.result_queue.join()
+        if scanner._sender_task:
+            await scanner._sender_task
+    except Exception:
+        pass
+
+    await ctx.send(f"# ✅ スキャン完了\nチェック数: {scanner.checked}\n発見数: {len(scanner.found)}")
+
+@bot.command()
+@commands.has_role("TISN管理者")
+async def scan_forever(ctx):
+    """停止コマンドで止めるまで永続的にスキャンを行います"""
+    if scanner.running:
+        await ctx.send("❌ 既に実行中です。")
+        return
+
+    target = bot.get_channel(TARGET_CHANNEL_ID)
+    
+    if target is None:
+        target = ctx.channel
+        await ctx.send(f"⚠️ 設定チャンネル({TARGET_CHANNEL_ID})が見つかりません。現在のチャンネル({ctx.channel.mention})を使用します。")
+    
+    if not isinstance(target, discord.TextChannel):
+        await ctx.send("❌ 指定されたチャンネルはテキストチャンネルではありません。")
+        return
+    
+    bot_member = target.guild.me
+    if not target.permissions_for(bot_member).send_messages:
+        await ctx.send(f"❌ Botは{target.mention}にメッセージを送信する権限がありません。")
+        return
+
+    scanner.running = True
+    scanner.checked = 0
+    scanner.forever = True
+    scanner._sender_task = asyncio.create_task(scanner._sender(target))
+
+    await ctx.send(f"🔁 永続スキャン開始（停止コマンドで停止）\n対象チャンネル: {target.mention}")
+
+    workers = [asyncio.create_task(scanner.worker(target)) for _ in range(MAX_WORKERS)]
+    await asyncio.gather(*workers, return_exceptions=True)
+
+    # workers finished (likely because scanner.running became False), wait for queue
+    try:
+        await scanner.result_queue.join()
+        if scanner._sender_task:
+            await scanner._sender_task
+    except Exception:
+        pass
+
+    await ctx.send(f"# ✅ 永続スキャン停止\nチェック数: {scanner.checked}\n発見数: {len(scanner.found)}")
+
+@bot.command()
+@commands.has_role("TISN管理者")
+async def stop(ctx):
+    """スキャン停止"""
+    if not scanner.running:
+        await ctx.send("実行していません。")
+        return
+    scanner.running = False
+    scanner.forever = False
+    # wait for queued results to be sent before confirming stop
+    try:
+        await scanner.result_queue.join()
+        if scanner._sender_task:
+            await scanner._sender_task
+    except Exception:
+        pass
+    await ctx.send("⏹️ 停止しました。")
+
+@bot.command()
+@commands.has_role("TISN管理者")
+async def status(ctx):
+    """現在の状態"""
+    await ctx.send(
+        f"実行中: {'はい' if scanner.running else 'いいえ'}\n"
+        f"永続モード: {'オン' if scanner.forever else 'オフ'}\n"
+        f"チェック済み: {scanner.checked}\n"
+        f"発見: {len(scanner.found)}"
+    )
+
+@bot.event
+async def on_disconnect():
+    await scanner.close()
+
+@bot.event
+async def on_command_error(ctx, error):
+    if isinstance(error, commands.NotOwner):
+        await ctx.send("❌ Bot所有者のみ実行可能です。")
+    else:
+        print(f"コマンドエラー: {error}")
+
+# ==============================
+# 起動
+# ==============================
+if __name__ == "__main__":
+    if not BOT_TOKEN:
+        print("ERROR: BOT_TOKENが設定されていません")
+        exit(1)
+    
+    start_keep_alive()  # キープアライブサーバー起動
+    try:
+        bot.run(BOT_TOKEN)
+    except Exception as e:
+        print(f"bot.run() で例外: {e}")
