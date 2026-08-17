@@ -10,14 +10,15 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 from datetime import datetime
 from dotenv import load_dotenv
 import re
+import json
 
 # ==============================
-# ✅ X検索ページを直接取得 + aiohttp制限を1MBに緩和
+# ✅ X内部APIを使用：JSON形式で生ツイートを直接取得
 # ==============================
 SEARCH_URLS = [
-    {"name": "X-検索1", "url": "https://x.com/search?q=discord+invite&f=live"},
-    {"name": "X-検索2", "url": "https://x.com/search?q=discord.gg&f=live"},
-    {"name": "X-検索3", "url": "https://x.com/search?q=discord+server&f=live"},
+    {"name": "X-API1", "url": "https://x.com/i/search/timeline?q=discord+invite&f=live"},
+    {"name": "X-API2", "url": "https://x.com/i/search/timeline?q=discord.gg&f=live"},
+    {"name": "X-API3", "url": "https://x.com/i/search/timeline?q=discord+server&f=live"},
 ]
 SCAN_INTERVAL = 180
 MAX_RETRY = 3
@@ -33,9 +34,10 @@ intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 
+# ✅ 正規表現：discord.gg/英数字記号
 DISCORD_RE = re.compile(r"discord\.gg/([A-Za-z0-9_\-]+)", re.IGNORECASE)
 
-print(f"=== ✅ aiohttp制限を1MBに緩和・X直接取得 ===")
+print(f"=== ✅ X内部JSON-APIを使用・制限1MB緩和済 ===")
 for u in SEARCH_URLS:
     print(f"  {u['name']}: {u['url']}")
 
@@ -68,7 +70,7 @@ class InviteScanner:
         self.web_running = False
         self.brute_running = False
         self.found_codes = set()
-        self.seen_links = {u["url"]: set() for u in SEARCH_URLS}
+        self.seen_ids = {u["url"]: set() for u in SEARCH_URLS}
         self.result_queue = asyncio.Queue()
         self._sender_task = None
         self.current_url_index = 0
@@ -77,24 +79,17 @@ class InviteScanner:
     async def init(self):
         headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36",
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept": "application/json, text/javascript, */*; q=0.01",
             "Accept-Language": "ja,en-US;q=0.9,en;q=0.8",
-            "Accept-Encoding": "gzip, deflate, br",
-            "DNT": "1",
-            "Sec-Fetch-Dest": "document",
-            "Sec-Fetch-Mode": "navigate",
-            "Sec-Fetch-Site": "none",
-            "Cache-Control": "max-age=0",
+            "X-Requested-With": "XMLHttpRequest",
+            "Referer": "https://x.com/search?q=discord+invite&f=live",
         }
         connector = aiohttp.TCPConnector(limit=5, force_close=False)
-        # ======================================
-        # ✅ 核心修正：ヘッダーサイズ制限を1MBに引き上げ！
-        # ======================================
         self.session = aiohttp.ClientSession(
             headers=headers,
             connector=connector,
-            max_line_size=1024*1024,   # ✅ 1MB
-            max_field_size=1024*1024,  # ✅ 1MB
+            max_line_size=1024*1024,
+            max_field_size=1024*1024,
         )
 
     async def close(self):
@@ -104,7 +99,7 @@ class InviteScanner:
             await self.session.close()
 
     # ======================================
-    # 📰 直接取得タスク
+    # 📰 JSON-API取得タスク
     # ======================================
     async def web_poller(self):
         while self.web_running:
@@ -112,7 +107,7 @@ class InviteScanner:
             name, url = info["name"], info["url"]
 
             try:
-                print(f"📰 [{name}] ページ取得中…")
+                print(f"📰 [{name}] JSON取得中…")
                 async with self.session.get(url, timeout=30, allow_redirects=True) as resp:
                     print(f"📡 [{name}] ステータス: {resp.status}")
 
@@ -139,34 +134,35 @@ class InviteScanner:
                         continue
 
                     self.fail_count = 0
-                    html = await resp.text()
-                    size = len(html)
+                    text = await resp.text()
+                    size = len(text)
                     print(f"✅ [{name}] 取得成功！ サイズ: {size}文字")
 
-                    if size < 1000:
+                    if size < 500:
                         print(f"⚠️ [{name}] 内容が少ない → 次へ")
                         self.current_url_index = (self.current_url_index + 1) % len(SEARCH_URLS)
                         await asyncio.sleep(5)
                         continue
 
-                codes = list(set(DISCORD_RE.findall(html)))
+                # ✅ JSONまたはテキストから直接抽出
+                codes = list(set(DISCORD_RE.findall(text)))
                 if codes:
-                    print(f"🔥 [{name}] ページから発見: {codes[:15]}")
+                    print(f"🔥 [{name}] 発見！: {codes[:15]}")
 
                 new_count = 0
                 valid_count = 0
                 for code in codes:
                     code = code.lower()
-                    if code in self.seen_links[url]:
+                    if code in self.seen_ids[url]:
                         continue
-                    self.seen_links[url].add(code)
+                    self.seen_ids[url].add(code)
                     new_count += 1
 
                     if code in self.found_codes:
                         continue
                     info = await self.check_code(code)
                     if info:
-                        info["source"] = f"Web:{name}"
+                        info["source"] = f"API:{name}"
                         valid_count += 1
                         await self.result_queue.put(info)
                         print(f"✅ 有効: discord.gg/{code} → {info['guild']}")
@@ -292,7 +288,7 @@ async def on_ready():
 async def web_start(ctx):
     target = bot.get_channel(TARGET_CHANNEL_ID) or ctx.channel
     if await scanner.start_web_monitor(target):
-        await ctx.send("✅ X検索直接監視開始！（制限緩和済）")
+        await ctx.send("✅ X-API監視開始！（JSON直接取得）")
     else:
         await ctx.send("❌ 既に実行中です")
 
@@ -311,7 +307,7 @@ async def scan_start_all(ctx):
     target = bot.get_channel(TARGET_CHANNEL_ID) or ctx.channel
     await scanner.start_web_monitor(target)
     await scanner.start_brute(target)
-    await ctx.send("🚀 検索監視＋総当たり 一斉開始！")
+    await ctx.send("🚀 API監視＋総当たり 一斉開始！")
 
 @bot.command(name="scan_stop")
 @commands.has_role("TISN管理者")
@@ -322,12 +318,12 @@ async def scan_stop(ctx):
 @bot.command(name="scan_status")
 @commands.has_role("TISN管理者")
 async def scan_status(ctx):
-    total_seen = sum(len(v) for v in scanner.seen_links.values())
+    total_seen = sum(len(v) for v in scanner.seen_ids.values())
     await ctx.send(
-        f"検索監視: {'✅ はい' if scanner.web_running else '❌ いいえ'}\n"
+        f"API監視: {'✅ はい' if scanner.web_running else '❌ いいえ'}\n"
         f"現在: {SEARCH_URLS[scanner.current_url_index]['name']}\n"
         f"連続失敗: {scanner.fail_count}/{MAX_RETRY}\n"
-        f"抽出済コード: {total_seen}件\n"
+        f"抽出済: {total_seen}件\n"
         f"有効確認済: {len(scanner.found_codes)}件"
     )
 
