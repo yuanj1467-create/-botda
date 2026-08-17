@@ -13,10 +13,11 @@ import re
 import feedparser
 
 # ==============================
-# 🔧 設定 ✅ nitter.net 正規URL
+# 🔧 設定
 # ==============================
 RSS_FEEDS = [
-    {"name": "X", "url": "https://nitter.net/search?f=tweets&q=discord.gg&rss=1"},
+    # ✅ 元のサーバーに戻す
+    {"name": "X", "url": "https://nitter.poast.org/search?q=discord.gg&f=tweets&rss=1"},
 ]
 RSS_SCAN_INTERVAL = 70
 
@@ -33,8 +34,8 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 
 DISCORD_RE = re.compile(r"discord\.gg/([A-Za-z0-9_\-]+)", re.IGNORECASE)
 
-print(f"=== 最終版｜nitter.net 正規URL ===")
-print(f"監視先: {[f['url'] for f in RSS_FEEDS]}")
+print(f"=== 最終版｜poast.orgに戻す ===")
+print(f"監視先: {[f['name'] for f in RSS_FEEDS]}")
 
 # ==============================
 # 🔧 キープアライブ
@@ -75,8 +76,9 @@ class InviteScanner:
     async def init(self):
         headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            "Accept": "application/rss+xml, application/xml, text/plain, */*",
+            "Accept": "application/json, text/plain, */*",
             "Accept-Language": "ja,en-US;q=0.9,en;q=0.8",
+            "Referer": "https://discord.com/",
         }
         connector = aiohttp.TCPConnector(limit=10, force_close=True)
         self.session = aiohttp.ClientSession(headers=headers, connector=connector)
