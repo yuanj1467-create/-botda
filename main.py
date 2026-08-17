@@ -28,7 +28,7 @@ CHECK_DELAY = float(os.getenv("CHECK_DELAY", "1.0")) # 総当たり1回毎の待
 load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 # ✅ 自分のチャンネルIDに書き換えて！
-TARGET_CHANNEL_ID = int(os.getenv("TARGET_CHANNEL_ID", "【自分のチャンネルIDを入力】"))
+TARGET_CHANNEL_ID = int(os.getenv("TARGET_CHANNEL_ID", "1538692769168625674"))
 
 intents = discord.Intents.default()
 intents.message_content = True
