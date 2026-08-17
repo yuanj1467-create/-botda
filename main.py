@@ -13,15 +13,15 @@ import re
 import feedparser
 
 # ==============================
-# 🔧 設定：複数のURLを順番に試す
+# 🔧 🔑 決定的修正：rss=1 → type=rss に変更
 # ==============================
 RSS_FEEDS = [
-    {"name": "X-poast", "url": "https://nitter.poast.org/search?q=discord.gg&f=tweets&rss=1"},
-    {"name": "X-space", "url": "https://nitter.space/search?q=discord.gg&f=tweets&rss=1"},
-    {"name": "X-nitter", "url": "https://nitter.net/search?q=discord.gg&f=tweets&rss=1"},
+    {"name": "X-poast",  "url": "https://nitter.poast.org/search?q=discord.gg&f=tweets&type=rss"},
+    {"name": "X-space",  "url": "https://nitter.space/search?q=discord.gg&f=tweets&type=rss"},
+    {"name": "X-nitter", "url": "https://nitter.net/search?q=discord.gg&f=tweets&type=rss"},
 ]
 RSS_SCAN_INTERVAL = 70
-MAX_RETRY = 5  # ✅ 5回失敗したら次のサーバーへ切り替え
+MAX_RETRY = 3  # 3回失敗で次へ（早めに切り替え）
 
 MAX_WORKERS = int(os.getenv("MAX_WORKERS", "5"))
 CHECK_DELAY = float(os.getenv("CHECK_DELAY", "1.5"))
@@ -36,7 +36,7 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 
 DISCORD_RE = re.compile(r"discord\.gg/([A-Za-z0-9_\-]+)", re.IGNORECASE)
 
-print(f"=== 自動切り替え版｜5回失敗で次へ ===")
+print(f"=== ✅ 正しいURL形式 type=rss に修正 ===")
 print(f"監視先: {[f['name'] for f in RSS_FEEDS]}")
 
 # ==============================
@@ -74,8 +74,8 @@ class InviteScanner:
         self.rss_tasks = []
         self.brute_tasks = []
         self.lock = asyncio.Lock()
-        self.current_feed_index = 0  # ✅ 現在使用中のURL
-        self.fail_count = 0           # ✅ 連続失敗カウント
+        self.current_feed_index = 0
+        self.fail_count = 0
 
     async def init(self):
         headers = {
@@ -95,10 +95,9 @@ class InviteScanner:
             await self.session.close()
 
     # ======================================
-    # 📰 RSS監視：5回失敗で自動的に次のサーバーへ
+    # 📰 RSS監視：正しいURLで自動切り替え
     # ======================================
     async def rss_poller_single(self, feed_info):
-        # この関数は「現在のURL」を追跡して自動切り替え
         while self.rss_running:
             feed_info = RSS_FEEDS[self.current_feed_index]
             name, url = feed_info["name"], feed_info["url"]
@@ -106,20 +105,18 @@ class InviteScanner:
             try:
                 print(f"📰 [{name}] RSS確認中… (失敗:{self.fail_count}/{MAX_RETRY})")
                 async with self.session.get(url, timeout=20) as resp:
-                    if resp.status in [503, 502, 500]:
+                    if resp.status in [503, 502, 500, 404]:
                         self.fail_count += 1
-                        print(f"⚠️ [{name}] サーバー落ち({resp.status}) → 失敗{self.fail_count}/{MAX_RETRY}")
+                        print(f"⚠️ [{name}] エラー({resp.status}) → 失敗{self.fail_count}/{MAX_RETRY}")
                         
-                        # ✅ 5回連続で失敗したら → 次のURLへ自動切り替え！
                         if self.fail_count >= MAX_RETRY:
                             self.fail_count = 0
                             self.current_feed_index = (self.current_feed_index + 1) % len(RSS_FEEDS)
-                            print(f"🔄 切り替え！ 次は: {RSS_FEEDS[self.current_feed_index]['name']}")
+                            print(f"🔄 切り替え！ 次: {RSS_FEEDS[self.current_feed_index]['name']}")
                             await asyncio.sleep(5)
                             continue
                         
-                        # まだ5回未満 → 60秒待機して再試行
-                        print(f"⏳ 60秒待機して再試行…")
+                        print(f"⏳ 60秒待機…")
                         await asyncio.sleep(60)
                         continue
 
@@ -132,7 +129,7 @@ class InviteScanner:
                         await asyncio.sleep(30)
                         continue
 
-                    # ✅ 接続成功！ 失敗カウントをリセット
+                    # ✅ 接続成功！
                     self.fail_count = 0
                     xml = await resp.text()
 
@@ -182,7 +179,7 @@ class InviteScanner:
                 if self.fail_count >= MAX_RETRY:
                     self.fail_count = 0
                     self.current_feed_index = (self.current_feed_index + 1) % len(RSS_FEEDS)
-                    print(f"🔄 エラー多発のため切り替え: {RSS_FEEDS[self.current_feed_index]['name']}")
+                    print(f"🔄 切り替え: {RSS_FEEDS[self.current_feed_index]['name']}")
                 await asyncio.sleep(10)
 
             await asyncio.sleep(RSS_SCAN_INTERVAL)
@@ -302,7 +299,7 @@ async def on_ready():
 async def rss_start(ctx):
     target = bot.get_channel(TARGET_CHANNEL_ID) or ctx.channel
     if await scanner.start_rss_all(target):
-        await ctx.send(f"✅ RSS監視開始！\n自動切り替え: 5回失敗で次へ\n間隔: {RSS_SCAN_INTERVAL}秒")
+        await ctx.send(f"✅ RSS監視開始！\n✅ URL修正済み: type=rss\n自動切り替え: {MAX_RETRY}回失敗で次へ")
     else:
         await ctx.send("❌ 既に実行中です")
 
