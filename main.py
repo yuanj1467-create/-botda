@@ -10,18 +10,16 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 from datetime import datetime
 from dotenv import load_dotenv
 import re
-import feedparser
 
 # ==============================
-# 🔧 最終解決：Nitterを捨て RSSHub でX検索RSSを取得！
+# 🔧 最終最終手段：RSSを使わない！ X検索ページを直接取得
 # ==============================
-RSS_FEEDS = [
-    # ✅ RSSHub公式：X検索をRSSに変換（Nitterと違って確実に動作する）
-    {"name": "RSSHub-1", "url": "https://rsshub.app/twitter/search?q=discord+invite"},
-    {"name": "RSSHub-2", "url": "https://rsshub.app/twitter/search?q=discord.gg"},
-    {"name": "RSSHub-3", "url": "https://rsshub.app/twitter/search?q=discord+server"},
+SEARCH_URLS = [
+    {"name": "X-検索1", "url": "https://x.com/search?q=discord+invite&f=live"},
+    {"name": "X-検索2", "url": "https://x.com/search?q=discord.gg&f=live"},
+    {"name": "X-検索3", "url": "https://x.com/search?q=discord+server&f=live"},
 ]
-RSS_SCAN_INTERVAL = 180  # ✅ 負荷を考慮して3分毎
+SCAN_INTERVAL = 180  # 3分毎
 MAX_RETRY = 3
 
 MAX_WORKERS = int(os.getenv("MAX_WORKERS", "5"))
@@ -35,12 +33,12 @@ intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 
-# ✅ 本文から discord.gg/xxx を抽出
+# ✅ 正規表現で直接抽出
 DISCORD_RE = re.compile(r"discord\.gg/([A-Za-z0-9_\-]+)", re.IGNORECASE)
 
-print(f"=== ✅ Nitter不具合確定 → RSSHubに完全移行 ===")
-for f in RSS_FEEDS:
-    print(f"  {f['name']}: {f['url']}")
+print(f"=== ✅ 最終手段：X検索ページを直接取得・RSS不使用 ===")
+for u in SEARCH_URLS:
+    print(f"  {u['name']}: {u['url']}")
 
 # ==============================
 # 🔧 キープアライブ
@@ -68,45 +66,48 @@ def start_keep_alive():
 class InviteScanner:
     def __init__(self):
         self.session = None
-        self.rss_running = False
+        self.web_running = False
         self.brute_running = False
         self.found_codes = set()
-        self.rss_entries = {feed["url"]: set() for feed in RSS_FEEDS}
+        self.seen_links = {u["url"]: set() for u in SEARCH_URLS}
         self.result_queue = asyncio.Queue()
         self._sender_task = None
-        self.rss_tasks = []
-        self.brute_tasks = []
-        self.lock = asyncio.Lock()
-        self.current_feed_index = 0
+        self.current_url_index = 0
         self.fail_count = 0
 
     async def init(self):
+        # ✅ ブラウザと同じヘッダーでXにアクセス
         headers = {
-            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            "Accept": "application/rss+xml,application/xml;q=0.9,*/*;q=0.8",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept-Language": "ja,en-US;q=0.9,en;q=0.8",
+            "Accept-Encoding": "gzip, deflate, br",
+            "DNT": "1",
+            "Sec-Fetch-Dest": "document",
+            "Sec-Fetch-Mode": "navigate",
+            "Sec-Fetch-Site": "none",
+            "Cache-Control": "max-age=0",
         }
         connector = aiohttp.TCPConnector(limit=5, force_close=False)
         self.session = aiohttp.ClientSession(headers=headers, connector=connector)
 
     async def close(self):
-        self.rss_running = False
+        self.web_running = False
         self.brute_running = False
-        for t in self.rss_tasks + self.brute_tasks:
-            t.cancel()
         if self.session and not self.session.closed:
             await self.session.close()
 
     # ======================================
-    # 📰 RSSHub監視
+    # 📰 直接取得タスク
     # ======================================
-    async def rss_poller_single(self, feed_info):
-        while self.rss_running:
-            feed_info = RSS_FEEDS[self.current_feed_index]
-            name, url = feed_info["name"], feed_info["url"]
+    async def web_poller(self):
+        while self.web_running:
+            info = SEARCH_URLS[self.current_url_index]
+            name, url = info["name"], info["url"]
 
             try:
-                print(f"📰 [{name}] RSS取得中…")
-                async with self.session.get(url, timeout=30) as resp:
+                print(f"📰 [{name}] ページ取得中…")
+                async with self.session.get(url, timeout=30, allow_redirects=True) as resp:
                     print(f"📡 [{name}] ステータス: {resp.status}")
 
                     if resp.status >= 500:
@@ -114,16 +115,16 @@ class InviteScanner:
                         print(f"⚠️ [{name}] サーバーエラー → {self.fail_count}/{MAX_RETRY}")
                         if self.fail_count >= MAX_RETRY:
                             self.fail_count = 0
-                            self.current_feed_index = (self.current_feed_index + 1) % len(RSS_FEEDS)
-                            print(f"🔄 切り替え → {RSS_FEEDS[self.current_feed_index]['name']}")
+                            self.current_url_index = (self.current_url_index + 1) % len(SEARCH_URLS)
+                            print(f"🔄 切り替え → {SEARCH_URLS[self.current_url_index]['name']}")
                             await asyncio.sleep(10)
                             continue
                         await asyncio.sleep(30)
                         continue
 
-                    if resp.status in [403, 429]:
-                        print(f"⚠️ [{name}] アクセス制限 → 次へ")
-                        self.current_feed_index = (self.current_feed_index + 1) % len(RSS_FEEDS)
+                    if resp.status in [401, 403, 429]:
+                        print(f"⚠️ [{name}] アクセス制限")
+                        self.current_url_index = (self.current_url_index + 1) % len(SEARCH_URLS)
                         await asyncio.sleep(60)
                         continue
                     if resp.status != 200:
@@ -131,68 +132,53 @@ class InviteScanner:
                         await asyncio.sleep(30)
                         continue
 
-                    # ✅ 成功！
+                    # ✅ 成功！HTML取得
                     self.fail_count = 0
-                    xml = await resp.text()
-                    size = len(xml)
+                    html = await resp.text()
+                    size = len(html)
                     print(f"✅ [{name}] 取得成功！ サイズ: {size}文字")
 
-                    if size < 500:
+                    if size < 1000:
                         print(f"⚠️ [{name}] 内容が少ない → 次へ")
-                        self.current_feed_index = (self.current_feed_index + 1) % len(RSS_FEEDS)
+                        self.current_url_index = (self.current_url_index + 1) % len(SEARCH_URLS)
                         await asyncio.sleep(5)
                         continue
 
-                # ✅ XMLから抽出
-                raw_codes = list(set(DISCORD_RE.findall(xml)))
-                if raw_codes:
-                    print(f"🔥 [{name}] 生XMLから直接発見！: {raw_codes[:10]}")
+                # ✅ HTMLから直接招待コードを抽出
+                codes = list(set(DISCORD_RE.findall(html)))
+                if codes:
+                    print(f"🔥 [{name}] ページから発見: {codes[:15]}")
 
-                feed = feedparser.parse(xml)
-                new_posts = 0
-                extracted = 0
-                valid = 0
-
-                for entry in feed.entries:
-                    entry_id = entry.get("id", entry.get("link", ""))
-                    if entry_id in self.rss_entries[url]:
+                new_count = 0
+                valid_count = 0
+                for code in codes:
+                    code = code.lower()
+                    if code in self.seen_links[url]:
                         continue
-                    self.rss_entries[url].add(entry_id)
-                    new_posts += 1
+                    self.seen_links[url].add(code)
+                    new_count += 1
 
-                    title = entry.get("title", "")
-                    summary = entry.get("summary", "")
-                    content = entry.get("content", [{}])[0].get("value", "")
-                    text_all = f"{title} {summary} {content}"
+                    if code in self.found_codes:
+                        continue
+                    info = await self.check_code(code)
+                    if info:
+                        info["source"] = f"Web:{name}"
+                        valid_count += 1
+                        await self.result_queue.put(info)
+                        print(f"✅ 有効: discord.gg/{code} → {info['guild']}")
 
-                    codes = DISCORD_RE.findall(text_all)
-                    if codes:
-                        print(f"🔍 [{name}] 投稿から: {codes[:10]}")
-
-                    for code in codes:
-                        code = code.lower()
-                        if code in self.found_codes:
-                            continue
-                        info = await self.check_code(code)
-                        if info:
-                            info["source"] = f"RSS:{name}"
-                            valid += 1
-                            await self.result_queue.put(info)
-                            print(f"✅ 有効: discord.gg/{code} → {info['guild']}")
-                    extracted += len(codes)
-
-                print(f"📊 [{name}] 新規{new_posts}件 / 抽出{extracted}件 / 有効{valid}件")
+                print(f"📊 [{name}] 新規{new_count}件 / 有効{valid_count}件")
 
             except Exception as e:
                 self.fail_count += 1
                 print(f"❌ [{name}] エラー: {type(e).__name__}: {e}")
                 if self.fail_count >= MAX_RETRY:
                     self.fail_count = 0
-                    self.current_feed_index = (self.current_feed_index + 1) % len(RSS_FEEDS)
-                    print(f"🔄 切り替え → {RSS_FEEDS[self.current_feed_index]['name']}")
+                    self.current_url_index = (self.current_url_index + 1) % len(SEARCH_URLS)
+                    print(f"🔄 切り替え → {SEARCH_URLS[self.current_url_index]['name']}")
                 await asyncio.sleep(10)
 
-            await asyncio.sleep(RSS_SCAN_INTERVAL)
+            await asyncio.sleep(SCAN_INTERVAL)
 
     # ======================================
     # 🔍 コード確認
@@ -203,28 +189,24 @@ class InviteScanner:
         return ''.join(random.choices(chars, k=length))
 
     async def check_code(self, code: str):
-        async with self.lock:
-            code = code.lower()
-            if code in self.found_codes:
-                return None
-            url = f"https://discord.com/api/v10/invites/{code}?with_counts=true"
-            try:
-                async with self.session.get(url, timeout=15) as resp:
-                    if resp.status == 200:
-                        data = await resp.json()
-                        self.found_codes.add(code)
-                        return {
-                            "code": code,
-                            "guild": data.get("guild", {}).get("name", "Unknown"),
-                            "members": data.get("approximate_member_count", 0),
-                            "online": data.get("approximate_presence_count", 0),
-                        }
-                    elif resp.status == 429:
-                        retry = float(resp.headers.get("Retry-After", 10))
-                        print(f"⚠️ API制限: {retry}秒待機")
-                        await asyncio.sleep(retry + 3)
-            except Exception as e:
-                print(f"確認エラー: {e}")
+        url = f"https://discord.com/api/v10/invites/{code}?with_counts=true"
+        try:
+            async with self.session.get(url, timeout=15) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    self.found_codes.add(code)
+                    return {
+                        "code": code,
+                        "guild": data.get("guild", {}).get("name", "Unknown"),
+                        "members": data.get("approximate_member_count", 0),
+                        "online": data.get("approximate_presence_count", 0),
+                    }
+                elif resp.status == 429:
+                    retry = float(resp.headers.get("Retry-After", 10))
+                    print(f"⚠️ API制限: {retry}秒")
+                    await asyncio.sleep(retry + 3)
+        except Exception as e:
+            print(f"確認エラー: {e}")
         return None
 
     async def brute_worker(self):
@@ -242,7 +224,7 @@ class InviteScanner:
     # ======================================
     async def sender_task(self, channel):
         print(f"📤 送信タスク起動")
-        while (self.rss_running or self.brute_running) or not self.result_queue.empty():
+        while (self.web_running or self.brute_running) or not self.result_queue.empty():
             try:
                 info = await asyncio.wait_for(self.result_queue.get(), timeout=1.0)
             except asyncio.TimeoutError:
@@ -270,12 +252,12 @@ class InviteScanner:
     # ======================================
     # 🚀 起動/停止
     # ======================================
-    async def start_rss_all(self, channel):
-        if self.rss_running:
+    async def start_web_monitor(self, channel):
+        if self.web_running:
             return False
-        self.rss_running = True
+        self.web_running = True
         self._sender_task = asyncio.create_task(self.sender_task(channel))
-        self.rss_tasks = [asyncio.create_task(self.rss_poller_single(None))]
+        asyncio.create_task(self.web_poller())
         return True
 
     async def start_brute(self, channel):
@@ -284,14 +266,13 @@ class InviteScanner:
         self.brute_running = True
         if not self._sender_task or self._sender_task.done():
             self._sender_task = asyncio.create_task(self.sender_task(channel))
-        self.brute_tasks = [asyncio.create_task(self.brute_worker()) for _ in range(MAX_WORKERS)]
+        for _ in range(MAX_WORKERS):
+            asyncio.create_task(self.brute_worker())
         return True
 
     async def stop_all(self):
-        self.rss_running = False
+        self.web_running = False
         self.brute_running = False
-        for t in self.rss_tasks + self.brute_tasks:
-            t.cancel()
         await asyncio.sleep(1)
 
 scanner = InviteScanner()
@@ -302,12 +283,12 @@ async def on_ready():
     await scanner.init()
 
 # ==================== 🎮 コマンド ====================
-@bot.command(name="rss_start")
+@bot.command(name="web_start")
 @commands.has_role("TISN管理者")
-async def rss_start(ctx):
+async def web_start(ctx):
     target = bot.get_channel(TARGET_CHANNEL_ID) or ctx.channel
-    if await scanner.start_rss_all(target):
-        await ctx.send("✅ RSSHub監視開始！（Nitterから完全移行）")
+    if await scanner.start_web_monitor(target):
+        await ctx.send("✅ X検索直接監視開始！（RSS不使用）")
     else:
         await ctx.send("❌ 既に実行中です")
 
@@ -324,9 +305,9 @@ async def brute_start(ctx):
 @commands.has_role("TISN管理者")
 async def scan_start_all(ctx):
     target = bot.get_channel(TARGET_CHANNEL_ID) or ctx.channel
-    await scanner.start_rss_all(target)
+    await scanner.start_web_monitor(target)
     await scanner.start_brute(target)
-    await ctx.send("🚀 RSS＋総当たり 一斉開始！")
+    await ctx.send("🚀 検索監視＋総当たり 一斉開始！")
 
 @bot.command(name="scan_stop")
 @commands.has_role("TISN管理者")
@@ -337,12 +318,13 @@ async def scan_stop(ctx):
 @bot.command(name="scan_status")
 @commands.has_role("TISN管理者")
 async def scan_status(ctx):
-    total_entries = sum(len(v) for v in scanner.rss_entries.values())
+    total_seen = sum(len(v) for v in scanner.seen_links.values())
     await ctx.send(
-        f"RSS実行中: {'✅ はい' if scanner.rss_running else '❌ いいえ'}\n"
-        f"現在: {RSS_FEEDS[scanner.current_feed_index]['name']}\n"
-        f"取得済: {total_entries}件\n"
-        f"発見済: {len(scanner.found_codes)}件"
+        f"検索監視: {'✅ はい' if scanner.web_running else '❌ いいえ'}\n"
+        f"現在: {SEARCH_URLS[scanner.current_url_index]['name']}\n"
+        f"連続失敗: {scanner.fail_count}/{MAX_RETRY}\n"
+        f"抽出済コード: {total_seen}件\n"
+        f"有効確認済: {len(scanner.found_codes)}件"
     )
 
 @bot.event
