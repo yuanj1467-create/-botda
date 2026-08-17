@@ -18,12 +18,13 @@ import feedparser
 RSS_FEEDS = [
     {"name": "X",       "url": "https://rss.app/feeds/nwTj8xNKEuP6MGiu.xml"},
     {"name": "Reddit",  "url": "https://rss.app/feeds/zUum5TkbGYODlWea.xml"},
-    {"name": "GitHub",  "url": "https://github.com/search.atom?q=discord.gg&type=code"},
+    # GitHubは一旦停止 → RSSではリンクの形で出てこないため
+    # {"name": "GitHub",  "url": "https://github.com/search.atom?q=discord.gg&type=code"},
 ]
 RSS_SCAN_INTERVAL = 70
 
-MAX_WORKERS = int(os.getenv("MAX_WORKERS", "5"))    # ✅ 403回避のため減らす
-CHECK_DELAY = float(os.getenv("CHECK_DELAY", "1.5")) # ✅ 403回避のため長くする
+MAX_WORKERS = int(os.getenv("MAX_WORKERS", "5"))
+CHECK_DELAY = float(os.getenv("CHECK_DELAY", "1.5"))
 
 load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN")
@@ -33,10 +34,10 @@ intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 
-# ✅ 【超重要】HTMLタグが周りにあっても確実に抽出する正規表現
-DISCORD_RE = re.compile(r"discord\.gg/([A-Za-z0-9_\-]{6,25})")
+# ✅ 【超強化版】前後に何があっても確実に抽出
+DISCORD_RE = re.compile(r"discord\.gg/([A-Za-z0-9_\-]{5,30})", re.IGNORECASE)
 
-print(f"=== 修正版｜リンク改善・抽出強化・403対策 ===")
+print(f"=== 抽出強化版｜HTMLタグ付きでも確実に拾う ===")
 print(f"監視先: {[f['name'] for f in RSS_FEEDS]}")
 
 # ==============================
@@ -76,7 +77,6 @@ class InviteScanner:
         self.lock = asyncio.Lock()
 
     async def init(self):
-        # ✅ 【403対策】完全なヘッダー情報を追加
         headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
             "Accept": "application/json, text/plain, */*",
@@ -95,7 +95,7 @@ class InviteScanner:
             await self.session.close()
 
     # ======================================
-    # 📰 RSS監視（HTML対応・抽出強化）
+    # 📰 RSS監視（抽出ログ詳細版）
     # ======================================
     async def rss_poller_single(self, feed_info):
         name, url = feed_info["name"], feed_info["url"]
@@ -106,7 +106,7 @@ class InviteScanner:
                 print(f"📰 [{name}] RSS確認中…")
                 async with self.session.get(url, timeout=20) as resp:
                     if resp.status == 403:
-                        print(f"⚠️ [{name}] 403 アクセス制限 → 60秒待機")
+                        print(f"⚠️ [{name}] 403 → 60秒待機")
                         await asyncio.sleep(60)
                         continue
                     if resp.status != 200:
@@ -127,28 +127,39 @@ class InviteScanner:
                     self.rss_entries[url].add(entry_id)
                     new_posts += 1
 
-                    # ✅ 【改善】タイトル・本文・コンテンツ全部結合して検索
+                    # ✅ 【徹底的】全ての部分を結合して検索
                     title = entry.get("title", "")
                     summary = entry.get("summary", "")
                     content = entry.get("content", [{}])[0].get("value", "")
-                    text = f"{title}\n{summary}\n{content}"
+                    
+                    # 全箇所を連結
+                    text_all = f"{title}\n{summary}\n{content}"
+                    
+                    # ✅ HTMLタグを完全に削除（最強版）
+                    text_clean = re.sub(r"<[^>]+>", " ", text_all)
+                    # ✅ 複数行を1行に
+                    text_clean = re.sub(r"\s+", " ", text_clean).strip()
 
-                    # ✅ HTMLタグを除去してから抽出（超重要！）
-                    text_clean = re.sub(r"<[^>]+>", " ", text)
+                    # ✅ 抽出実行
                     codes = DISCORD_RE.findall(text_clean)
 
+                    # ✅ デバッグ用：何が見つかったかログに詳しく出す
                     if codes:
-                        print(f"🔍 [{name}] コード発見: {codes}")
+                        print(f"🔍 [{name}] コード発見！ → {codes}")
+                    else:
+                        # デバッグ：見つからない場合でも、一部を表示して確認
+                        if "discord.gg" in text_all.lower():
+                            print(f"⚠️ [{name}] 文字列は存在するが抽出失敗！一部: {text_clean[:200]}")
 
                     for code in codes:
-                        if code in self.found_codes:
+                        if code.lower() in self.found_codes:
                             continue
                         info = await self.check_code(code)
                         if info:
                             info["source"] = f"RSS:{name}"
                             valid += 1
                             await self.result_queue.put(info)
-                            print(f"✅ [{name}] 有効: {code} → {info['guild']}")
+                            print(f"✅ [{name}] 有効: discord.gg/{code} → {info['guild']}")
                     extracted += len(codes)
 
                 print(f"📊 [{name}] 新規{new_posts}件 / 抽出{extracted}件 / 有効{valid}件")
@@ -159,7 +170,7 @@ class InviteScanner:
             await asyncio.sleep(RSS_SCAN_INTERVAL)
 
     # ======================================
-    # 🔍 コード確認（403耐性強化）
+    # 🔍 コード確認
     # ======================================
     def generate_code(self):
         chars = string.ascii_letters + string.digits
@@ -168,6 +179,7 @@ class InviteScanner:
 
     async def check_code(self, code: str):
         async with self.lock:
+            code = code.lower()
             if code in self.found_codes:
                 return None
             url = f"https://discord.com/api/v10/invites/{code}?with_counts=true"
@@ -183,16 +195,14 @@ class InviteScanner:
                             "online": data.get("approximate_presence_count", 0),
                         }
                     elif resp.status == 403:
-                        print(f"⚠️ 403制限中… 少し待って再試行: {code}")
+                        print(f"⚠️ 403制限: discord.gg/{code}")
                         await asyncio.sleep(5)
-                    elif resp.status == 404:
-                        print(f"❌ 無効: {code}")
                     elif resp.status == 429:
                         retry = float(resp.headers.get("Retry-After", 10))
                         print(f"⚠️ API制限: {retry}秒待機")
                         await asyncio.sleep(retry + 3)
             except Exception as e:
-                print(f"確認エラー {code}: {e}")
+                print(f"確認エラー discord.gg/{code}: {e}")
         return None
 
     async def brute_worker(self):
@@ -206,7 +216,7 @@ class InviteScanner:
             await asyncio.sleep(CHECK_DELAY)
 
     # ======================================
-    # 📤 通知（リンクをクリック可能に改善）
+    # 📤 通知（枠の下にリンク表示）
     # ======================================
     async def sender_task(self, channel):
         print(f"📤 送信タスク起動: {channel.name}")
@@ -218,17 +228,11 @@ class InviteScanner:
 
             try:
                 invite_url = f"https://discord.gg/{info['code']}"
+
                 embed = discord.Embed(
                     title="🎉 有効な招待コード発見！",
-                    url=invite_url,  # ✅ タイトル部分が直接リンクになる
                     color=0x2ecc71,
                     timestamp=datetime.now()
-                )
-                # ✅ 【改善】コード部分をクリック可能なリンクに
-                embed.add_field(
-                    name="🔗 招待リンク",
-                    value=f"👉 **{invite_url}**",
-                    inline=False
                 )
                 embed.add_field(name="サーバー名", value=info["guild"], inline=True)
                 embed.add_field(name="メンバー数", value=str(info["members"]), inline=True)
@@ -236,6 +240,8 @@ class InviteScanner:
                 embed.add_field(name="📥 取得元", value=info.get("source", "不明"), inline=False)
 
                 await channel.send(embed=embed)
+                await channel.send(f"👉 **{invite_url}**")
+
                 print(f"📤 送信完了: {invite_url}")
             except Exception as e:
                 print(f"❌ 送信エラー: {e}")
