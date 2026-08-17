@@ -13,13 +13,10 @@ import re
 import feedparser
 
 # ==============================
-# 🔧 設定
+# 🔧 設定 ✅ nitter.net 正規URL
 # ==============================
 RSS_FEEDS = [
-    # ✅ 代替サーバーに変更！ poast.orgが落ちているのでこちらを使う
-    {"name": "X", "url": "https://nitter.lucabased.xyz/search?q=discord.gg&f=tweets&rss=1"},
-    # 🔁 上記がダメなら下記に差し替えて
-    # {"name": "X", "url": "https://nitter.space/search?q=discord.gg&f=tweets&rss=1"},
+    {"name": "X", "url": "https://nitter.net/search?f=tweets&q=discord.gg&rss=1"},
 ]
 RSS_SCAN_INTERVAL = 70
 
@@ -28,7 +25,6 @@ CHECK_DELAY = float(os.getenv("CHECK_DELAY", "1.5"))
 
 load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-# ✅ チャンネルID 設定済み！ 自分で変更不要
 TARGET_CHANNEL_ID = 1538692769168625674
 
 intents = discord.Intents.default()
@@ -37,8 +33,8 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 
 DISCORD_RE = re.compile(r"discord\.gg/([A-Za-z0-9_\-]+)", re.IGNORECASE)
 
-print(f"=== 503対策版｜代替Nitterサーバー ===")
-print(f"監視先: {[f['name'] for f in RSS_FEEDS]}")
+print(f"=== 最終版｜nitter.net 正規URL ===")
+print(f"監視先: {[f['url'] for f in RSS_FEEDS]}")
 
 # ==============================
 # 🔧 キープアライブ
@@ -79,9 +75,8 @@ class InviteScanner:
     async def init(self):
         headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            "Accept": "application/json, text/plain, */*",
+            "Accept": "application/rss+xml, application/xml, text/plain, */*",
             "Accept-Language": "ja,en-US;q=0.9,en;q=0.8",
-            "Referer": "https://discord.com/",
         }
         connector = aiohttp.TCPConnector(limit=10, force_close=True)
         self.session = aiohttp.ClientSession(headers=headers, connector=connector)
@@ -95,7 +90,7 @@ class InviteScanner:
             await self.session.close()
 
     # ======================================
-    # 📰 RSS監視：生XMLから直接抽出
+    # 📰 RSS監視
     # ======================================
     async def rss_poller_single(self, feed_info):
         name, url = feed_info["name"], feed_info["url"]
@@ -105,8 +100,8 @@ class InviteScanner:
             try:
                 print(f"📰 [{name}] RSS確認中…")
                 async with self.session.get(url, timeout=20) as resp:
-                    if resp.status == 503:
-                        print(f"⚠️ [{name}] サーバー一時停止 → 60秒待機して再試行")
+                    if resp.status in [503, 502, 500]:
+                        print(f"⚠️ [{name}] サーバー一時停止({resp.status}) → 60秒待機")
                         await asyncio.sleep(60)
                         continue
                     if resp.status == 403:
@@ -160,6 +155,7 @@ class InviteScanner:
 
             except Exception as e:
                 print(f"❌ [{name}] エラー: {e}")
+                await asyncio.sleep(30)
 
             await asyncio.sleep(RSS_SCAN_INTERVAL)
 
@@ -210,7 +206,7 @@ class InviteScanner:
             await asyncio.sleep(CHECK_DELAY)
 
     # ======================================
-    # 📤 通知：枠の下にリンク表示
+    # 📤 通知
     # ======================================
     async def sender_task(self, channel):
         print(f"📤 送信タスク起動: {channel.name}")
