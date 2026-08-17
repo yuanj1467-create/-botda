@@ -16,10 +16,10 @@ import feedparser
 # 🔧 設定
 # ==============================
 RSS_FEEDS = [
-    {"name": "X",       "url": "https://rss.app/feeds/nwTj8xNKEuP6MGiu.xml"},
-    {"name": "Reddit",  "url": "https://rss.app/feeds/zUum5TkbGYODlWea.xml"},
-    # GitHubは一旦停止 → RSSではリンクの形で出てこないため
-    # {"name": "GitHub",  "url": "https://github.com/search.atom?q=discord.gg&type=code"},
+    # ✅ X（Nitter直接RSS・トークン不要・リアルタイム更新）
+    {"name": "X", "url": "https://nitter.poast.org/search?q=discord.gg&f=tweets&rss=1"},
+    # ❌ Reddit 無効化（コメントアウト）
+    # {"name": "Reddit", "url": "https://rss.app/feeds/zUum5TkbGYODlWea.xml"},
 ]
 RSS_SCAN_INTERVAL = 70
 
@@ -34,11 +34,12 @@ intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 
-# ✅ 【超強化版】前後に何があっても確実に抽出
-DISCORD_RE = re.compile(r"discord\.gg/([A-Za-z0-9_\-]{5,30})", re.IGNORECASE)
+# ✅ 生テキストから直接抽出（大文字小文字区別なし）
+DISCORD_RE = re.compile(r"discord\.gg/([A-Za-z0-9_\-]+)", re.IGNORECASE)
 
-print(f"=== 抽出強化版｜HTMLタグ付きでも確実に拾う ===")
+print(f"=== 最終版｜X(Nitter) 専用 ===")
 print(f"監視先: {[f['name'] for f in RSS_FEEDS]}")
+print(f"✅ Nitter: トークン/APIキー 一切不要")
 
 # ==============================
 # 🔧 キープアライブ
@@ -95,7 +96,7 @@ class InviteScanner:
             await self.session.close()
 
     # ======================================
-    # 📰 RSS監視（抽出ログ詳細版）
+    # 📰 RSS監視：生XMLから直接抽出
     # ======================================
     async def rss_poller_single(self, feed_info):
         name, url = feed_info["name"], feed_info["url"]
@@ -115,6 +116,11 @@ class InviteScanner:
                         continue
                     xml = await resp.text()
 
+                # ✅ 生XML全体から直接検索！
+                raw_codes = list(set(DISCORD_RE.findall(xml)))
+                if raw_codes:
+                    print(f"🔥 [{name}] 生XMLから直接発見！: {raw_codes[:10]}")
+
                 feed = feedparser.parse(xml)
                 new_posts = 0
                 extracted = 0
@@ -127,32 +133,18 @@ class InviteScanner:
                     self.rss_entries[url].add(entry_id)
                     new_posts += 1
 
-                    # ✅ 【徹底的】全ての部分を結合して検索
                     title = entry.get("title", "")
                     summary = entry.get("summary", "")
                     content = entry.get("content", [{}])[0].get("value", "")
-                    
-                    # 全箇所を連結
-                    text_all = f"{title}\n{summary}\n{content}"
-                    
-                    # ✅ HTMLタグを完全に削除（最強版）
-                    text_clean = re.sub(r"<[^>]+>", " ", text_all)
-                    # ✅ 複数行を1行に
-                    text_clean = re.sub(r"\s+", " ", text_clean).strip()
+                    text_all = f"{title} {summary} {content}"
 
-                    # ✅ 抽出実行
-                    codes = DISCORD_RE.findall(text_clean)
-
-                    # ✅ デバッグ用：何が見つかったかログに詳しく出す
+                    codes = DISCORD_RE.findall(text_all)
                     if codes:
-                        print(f"🔍 [{name}] コード発見！ → {codes}")
-                    else:
-                        # デバッグ：見つからない場合でも、一部を表示して確認
-                        if "discord.gg" in text_all.lower():
-                            print(f"⚠️ [{name}] 文字列は存在するが抽出失敗！一部: {text_clean[:200]}")
+                        print(f"🔍 [{name}] 投稿から発見: {codes[:10]}")
 
                     for code in codes:
-                        if code.lower() in self.found_codes:
+                        code = code.lower()
+                        if code in self.found_codes:
                             continue
                         info = await self.check_code(code)
                         if info:
@@ -195,14 +187,14 @@ class InviteScanner:
                             "online": data.get("approximate_presence_count", 0),
                         }
                     elif resp.status == 403:
-                        print(f"⚠️ 403制限: discord.gg/{code}")
+                        print(f"⚠️ 403: discord.gg/{code}")
                         await asyncio.sleep(5)
                     elif resp.status == 429:
                         retry = float(resp.headers.get("Retry-After", 10))
-                        print(f"⚠️ API制限: {retry}秒待機")
+                        print(f"⚠️ 制限: {retry}秒待機")
                         await asyncio.sleep(retry + 3)
             except Exception as e:
-                print(f"確認エラー discord.gg/{code}: {e}")
+                print(f"確認エラー: {e}")
         return None
 
     async def brute_worker(self):
@@ -212,11 +204,11 @@ class InviteScanner:
             if info:
                 info["source"] = "総当たり"
                 await self.result_queue.put(info)
-                print(f"🔍 総当たり発見: {code} → {info['guild']}")
+                print(f"🔍 総当たり発見: {code}")
             await asyncio.sleep(CHECK_DELAY)
 
     # ======================================
-    # 📤 通知（枠の下にリンク表示）
+    # 📤 通知：枠の下にリンク表示
     # ======================================
     async def sender_task(self, channel):
         print(f"📤 送信タスク起動: {channel.name}")
@@ -228,7 +220,6 @@ class InviteScanner:
 
             try:
                 invite_url = f"https://discord.gg/{info['code']}"
-
                 embed = discord.Embed(
                     title="🎉 有効な招待コード発見！",
                     color=0x2ecc71,
@@ -241,7 +232,6 @@ class InviteScanner:
 
                 await channel.send(embed=embed)
                 await channel.send(f"👉 **{invite_url}**")
-
                 print(f"📤 送信完了: {invite_url}")
             except Exception as e:
                 print(f"❌ 送信エラー: {e}")
